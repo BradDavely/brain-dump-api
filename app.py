@@ -1,21 +1,16 @@
-from flask import Flask, request, jsonify
-import requests
-import os
-
-app = Flask(__name__)
-
-OPENAI_KEY = os.environ.get("OPENAI_KEY")
-TODOIST_TOKEN = os.environ.get("TODOIST_TOKEN")
-
 @app.route("/braindump", methods=["POST"])
 def braindump():
     data = request.json
+    print("Incoming request:", data)
+
     text = data.get("text", "")
 
     if not text:
+        print("No text provided")
         return jsonify({"error": "No text provided"}), 400
 
-    # Call OpenAI
+    print("Calling OpenAI...")
+
     response = requests.post(
         "https://api.openai.com/v1/chat/completions",
         headers={
@@ -31,12 +26,16 @@ def braindump():
         }
     )
 
+    print("OpenAI response status:", response.status_code)
+    print("OpenAI response body:", response.text)
+
     content = response.json()["choices"][0]["message"]["content"]
     tasks = [t.strip() for t in content.split("\n") if t.strip()]
 
-    # Send each task to Todoist
+    print("Extracted tasks:", tasks)
+
     for task in tasks:
-        requests.post(
+        todoist_response = requests.post(
             "https://api.todoist.com/api/v1/tasks",
             headers={
                 "Authorization": f"Bearer {TODOIST_TOKEN}",
@@ -44,8 +43,7 @@ def braindump():
             },
             json={"content": task}
         )
+        print("Todoist status:", todoist_response.status_code)
+        print("Todoist response:", todoist_response.text)
 
     return jsonify({"status": "success", "tasks_created": len(tasks)})
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000)
