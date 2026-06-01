@@ -32,7 +32,7 @@ def braindump():
             "Content-Type": "application/json"
         },
         json={
-            "model": "gpt-4o-mini",
+            "model": "gpt-5.4-mini",
             "messages": [
                 {"role": "system", "content": "Extract actionable tasks. Each task must be on its own line. No numbering."},
                 {"role": "user", "content": text}
