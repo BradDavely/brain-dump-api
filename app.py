@@ -14,9 +14,14 @@ def home():
 @app.route("/braindump", methods=["POST"])
 def braindump():
     try:
-        data = request.get_json()
-        text = data.get("text", "")
+        if not OPENAI_KEY or not TODOIST_TOKEN:
+            return jsonify({"error": "Missing environment variables"}), 500
 
+        data = request.get_json(silent=True)
+        if not data:
+            return jsonify({"error": "Invalid JSON body"}), 400
+
+        text = data.get("text", "").strip()
         if not text:
             return jsonify({"error": "No text provided"}), 400
 
@@ -32,23 +37,31 @@ def braindump():
                 "messages": [
                     {
                         "role": "system",
-                        "content": "Extract actionable tasks. Each task on its own line. No numbering."
+                        "content": "Extract actionable tasks. Each task must be on its own line. No numbering."
                     },
                     {
                         "role": "user",
                         "content": text
                     }
                 ]
-            }
+            },
+            timeout=20
         )
 
         if openai_response.status_code != 200:
             return jsonify({
-                "error": "OpenAI failed",
+                "error": "OpenAI request failed",
                 "details": openai_response.text
             }), 500
 
-        content = openai_response.json()["choices"][0]["message"]["content"]
+        try:
+            content = openai_response.json()["choices"][0]["message"]["content"]
+        except (KeyError, IndexError):
+            return jsonify({
+                "error": "Unexpected OpenAI response",
+                "details": openai_response.text
+            }), 500
+
         tasks = [t.strip() for t in content.split("\n") if t.strip()]
 
         created = 0
@@ -60,7 +73,8 @@ def braindump():
                     "Authorization": f"Bearer {TODOIST_TOKEN}",
                     "Content-Type": "application/json"
                 },
-                json={"content": task}
+                json={"content": task},
+                timeout=10
             )
 
             if todoist_response.status_code == 200:
@@ -68,4 +82,17 @@ def braindump():
 
         return jsonify({
             "status": "success",
-            "tasks_created": cr |
+            "tasks_created": created,
+            "tasks_parsed": len(tasks)
+        })
+
+    except Exception as e:
+        return jsonify({
+            "error": "Server error",
+            "details": str(e)
+        }), 500
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))
+    app.run(host="0.0.0.0", port=port)
