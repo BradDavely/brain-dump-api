@@ -1,49 +1,71 @@
+from flask import Flask, request, jsonify
+import requests
+import os
+
+app = Flask(__name__)
+
+OPENAI_KEY = os.environ.get("OPENAI_KEY")
+TODOIST_TOKEN = os.environ.get("TODOIST_TOKEN")
+
+@app.route("/")
+def home():
+    return "Brain Dump API is running"
+
 @app.route("/braindump", methods=["POST"])
 def braindump():
-    data = request.json
-    print("Incoming request:", data)
+    try:
+        data = request.get_json()
+        text = data.get("text", "")
 
-    text = data.get("text", "")
+        if not text:
+            return jsonify({"error": "No text provided"}), 400
 
-    if not text:
-        print("No text provided")
-        return jsonify({"error": "No text provided"}), 400
-
-    print("Calling OpenAI...")
-
-    response = requests.post(
-        "https://api.openai.com/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {OPENAI_KEY}",
-            "Content-Type": "application/json"
-        },
-        json={
-            "model": "gpt-4o-mini",
-            "messages": [
-                {"role": "system", "content": "Extract actionable tasks. Each task on its own line. No numbering."},
-                {"role": "user", "content": text}
-            ]
-        }
-    )
-
-    print("OpenAI response status:", response.status_code)
-    print("OpenAI response body:", response.text)
-
-    content = response.json()["choices"][0]["message"]["content"]
-    tasks = [t.strip() for t in content.split("\n") if t.strip()]
-
-    print("Extracted tasks:", tasks)
-
-    for task in tasks:
-        todoist_response = requests.post(
-            "https://api.todoist.com/api/v1/tasks",
+        # Call OpenAI
+        openai_response = requests.post(
+            "https://api.openai.com/v1/chat/completions",
             headers={
-                "Authorization": f"Bearer {TODOIST_TOKEN}",
+                "Authorization": f"Bearer {OPENAI_KEY}",
                 "Content-Type": "application/json"
             },
-            json={"content": task}
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "Extract actionable tasks. Each task on its own line. No numbering."
+                    },
+                    {
+                        "role": "user",
+                        "content": text
+                    }
+                ]
+            }
         )
-        print("Todoist status:", todoist_response.status_code)
-        print("Todoist response:", todoist_response.text)
 
-    return jsonify({"status": "success", "tasks_created": len(tasks)})
+        if openai_response.status_code != 200:
+            return jsonify({
+                "error": "OpenAI failed",
+                "details": openai_response.text
+            }), 500
+
+        content = openai_response.json()["choices"][0]["message"]["content"]
+        tasks = [t.strip() for t in content.split("\n") if t.strip()]
+
+        created = 0
+
+        for task in tasks:
+            todoist_response = requests.post(
+                "https://api.todoist.com/api/v1/tasks",
+                headers={
+                    "Authorization": f"Bearer {TODOIST_TOKEN}",
+                    "Content-Type": "application/json"
+                },
+                json={"content": task}
+            )
+
+            if todoist_response.status_code == 200:
+                created += 1
+
+        return jsonify({
+            "status": "success",
+            "tasks_created": cr |
