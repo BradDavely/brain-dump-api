@@ -102,21 +102,20 @@ def braindump():
         print(f"[{request_id}] AI parsing failed:", str(e))
         return jsonify({"error": "AI parsing failed"}), 500
 
-    # ✅ Fetch existing tasks for duplicate detection
+    # ✅ Duplicate detection
+    existing_titles = set()
     existing_response = requests.get(
-    "https://api.todoist.com/api/v1/tasks",
-    headers={"Authorization": f"Bearer {TODOIST_TOKEN}"}
-)
+        "https://api.todoist.com/api/v1/tasks",
+        headers={"Authorization": f"Bearer {TODOIST_TOKEN}"}
+    )
 
-existing_titles = set()
-
-if existing_response.status_code == 200:
-    existing_json = existing_response.json()
-    existing_tasks = existing_json.get("results", [])
-    existing_titles = {
-        t.get("content", "").lower().strip()
-        for t in existing_tasks
-    }
+    if existing_response.status_code == 200:
+        existing_json = existing_response.json()
+        existing_tasks = existing_json.get("results", [])
+        for t in existing_tasks:
+            title = t.get("content", "").lower().strip()
+            if title:
+                existing_titles.add(title)
 
     created = 0
     skipped = 0
@@ -126,7 +125,6 @@ if existing_response.status_code == 200:
         normalized = title.lower()
 
         if normalized in existing_titles:
-            print(f"[{request_id}] Skipping duplicate: {title}")
             skipped += 1
             continue
 
@@ -141,22 +139,18 @@ if existing_response.status_code == 200:
         if project_id:
             payload["project_id"] = project_id
 
-        try:
-            todoist_response = requests.post(
-                "https://api.todoist.com/api/v1/tasks",
-                headers={
-                    "Authorization": f"Bearer {TODOIST_TOKEN}",
-                    "Content-Type": "application/json"
-                },
-                json=payload,
-                timeout=10
-            )
+        todoist_response = requests.post(
+            "https://api.todoist.com/api/v1/tasks",
+            headers={
+                "Authorization": f"Bearer {TODOIST_TOKEN}",
+                "Content-Type": "application/json"
+            },
+            json=payload,
+            timeout=10
+        )
 
-            if todoist_response.status_code == 200:
-                created += 1
-
-        except Exception as e:
-            print(f"[{request_id}] Todoist exception:", str(e))
+        if todoist_response.status_code == 200:
+            created += 1
 
     print(f"[{request_id}] Created {created}, Skipped {skipped}")
 
