@@ -8,6 +8,7 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 app = Flask(__name__)
 
@@ -105,7 +106,10 @@ def braindump():
                             "Return JSON with tasks containing title, project (work|home|other), priority 1-4."
                         )
                     },
-                    {"role": "user", "content": text}
+                    {
+                        "role": "user",
+                        "content": text
+                    }
                 ]
             }
         )
@@ -117,8 +121,8 @@ def braindump():
     except Exception:
         return jsonify({"error": "AI parsing failed"}), 500
 
-    # Duplicate detection
     existing_titles = set()
+
     existing_response = requests.get(
         "https://api.todoist.com/api/v1/tasks",
         headers={"Authorization": f"Bearer {TODOIST_TOKEN}"}
@@ -126,8 +130,11 @@ def braindump():
 
     if existing_response.status_code == 200:
         existing_tasks = existing_response.json().get("results", [])
+
         for t in existing_tasks:
-            existing_titles.add(normalize_title(t.get("content", "")))
+            existing_titles.add(
+                normalize_title(t.get("content", ""))
+            )
 
     created = 0
     skipped = 0
@@ -244,10 +251,5 @@ def daily_summary():
         "count": len(today_tasks)
     })
 
-# ------------------------
-# Main
-# ------------------------
-
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
-```
