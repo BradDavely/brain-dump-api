@@ -7,7 +7,7 @@ import re
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from datetime import datetime, timedelta
+from datetime import datetime
 
 app = Flask(__name__)
 
@@ -88,7 +88,6 @@ def braindump():
     if not text:
         return jsonify({"error": "No text provided"}), 400
 
-    # --- Call GPT ---
     try:
         openai_response = requests.post(
             "https://api.openai.com/v1/chat/completions",
@@ -118,7 +117,7 @@ def braindump():
     except Exception:
         return jsonify({"error": "AI parsing failed"}), 500
 
-    # --- Duplicate Detection ---
+    # Duplicate detection
     existing_titles = set()
     existing_response = requests.get(
         "https://api.todoist.com/api/v1/tasks",
@@ -171,7 +170,7 @@ def braindump():
     })
 
 # ------------------------
-# Daily Summary
+# Daily Summary Only
 # ------------------------
 
 @app.route("/daily-summary")
@@ -194,7 +193,6 @@ def daily_summary():
         if datetime.fromisoformat(t["created_at"].replace("Z", "+00:00")).date() == today
     ]
 
-    # HTML formatting
     html_tasks = "".join(f"<li>{task}</li>" for task in today_tasks)
 
     html_body = f"""
@@ -215,69 +213,3 @@ def daily_summary():
     )
 
     return jsonify({"sent": True, "count": len(today_tasks)})
-
-# ------------------------
-# Weekly Review
-# ------------------------
-
-@app.route("/weekly-review")
-def weekly_review():
-    if not require_auth(request):
-        return jsonify({"error": "Unauthorized"}), 401
-
-    one_week_ago = datetime.utcnow() - timedelta(days=7)
-
-    response = requests.get(
-        "https://api.todoist.com/api/v1/tasks?filter=completed",
-        headers={"Authorization": f"Bearer {TODOIST_TOKEN}"}
-    )
-
-    tasks = response.json().get("results", [])
-
-    recent = [
-        t["content"]
-        for t in tasks
-        if datetime.fromisoformat(t["completed_at"].replace("Z", "+00:00")) > one_week_ago
-    ]
-
-    if not recent:
-        return jsonify({"message": "No completed tasks this week."})
-
-    review_prompt = (
-        "Summarize this week's accomplishments and highlight key wins and improvement areas:\n\n"
-        + "\n".join(recent)
-    )
-
-    ai_response = requests.post(
-        "https://api.openai.com/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {OPENAI_KEY}",
-            "Content-Type": "application/json"
-        },
-        json={
-            "model": "gpt-5.4-mini",
-            "messages": [
-                {"role": "system", "content": "You are a reflective productivity coach."},
-                {"role": "user", "content": review_prompt}
-            ]
-        }
-    )
-
-    summary = ai_response.json()["choices"][0]["message"]["content"]
-
-    html_body = f"""
-    <html>
-      <body style="font-family: Arial, sans-serif;">
-        <h2>Weekly Productivity Review</h2>
-        <div style="white-space: pre-line;">{summary}</div>
-      </body>
-    </html>
-    """
-
-    send_email(
-        subject="Weekly Productivity Review",
-        body_text=summary,
-        body_html=html_body
-    )
-
-    return jsonify({"sent": True})
