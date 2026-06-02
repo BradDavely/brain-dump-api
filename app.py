@@ -11,7 +11,6 @@ OPENAI_KEY = os.environ.get("OPENAI_KEY")
 TODOIST_TOKEN = os.environ.get("TODOIST_TOKEN")
 INTERNAL_API_KEY = os.environ.get("INTERNAL_API_KEY")
 
-# ✅ Project Routing Map
 PROJECT_MAP = {
     "work": "6RH9f45GMC49J67P",
     "home": "6RH9f43CvMjp9Vcp"
@@ -30,13 +29,9 @@ def braindump():
     request_id = str(uuid.uuid4())
     print(f"[{request_id}] Incoming request at {datetime.utcnow().isoformat()}")
 
-    # Secret key protection
     provided_key = request.headers.get("X-Internal-Key")
     if INTERNAL_API_KEY and provided_key != INTERNAL_API_KEY:
         return jsonify({"error": "Unauthorized"}), 401
-
-    if not OPENAI_KEY or not TODOIST_TOKEN:
-        return jsonify({"error": "Server configuration error"}), 500
 
     data = request.get_json(silent=True)
     if not data:
@@ -73,11 +68,11 @@ def braindump():
                             "  ]\n"
                             "}\n\n"
                             "Project rules:\n"
-                            "- work = professional tasks, grants, writing, research, clients, meetings, job-related items\n"
-                            "- home = household, maintenance, errands, car, bills, chores\n"
+                            "- work = professional tasks, grants, writing, research, clients, meetings\n"
+                            "- home = household, maintenance, errands, car, bills\n"
                             "- other = anything else\n\n"
                             "Priority rules:\n"
-                            "4 = Urgent or time-sensitive\n"
+                            "4 = Urgent\n"
                             "3 = Important\n"
                             "2 = Medium\n"
                             "1 = Low\n\n"
@@ -107,14 +102,37 @@ def braindump():
         print(f"[{request_id}] AI parsing failed:", str(e))
         return jsonify({"error": "AI parsing failed"}), 500
 
+    # ✅ Fetch existing tasks for duplicate detection
+    existing_response = requests.get(
+        "https://api.todoist.com/api/v1/tasks",
+        headers={"Authorization": f"Bearer {TODOIST_TOKEN}"}
+    )
+
+    existing_titles = set()
+    if existing_response.status_code == 200:
+        existing_tasks = existing_response.json()
+        existing_titles = {
+            t["content"].lower().strip()
+            for t in existing_tasks
+        }
+
     created = 0
+    skipped = 0
 
     for task in tasks:
+        title = task.get("title", "").strip()
+        normalized = title.lower()
+
+        if normalized in existing_titles:
+            print(f"[{request_id}] Skipping duplicate: {title}")
+            skipped += 1
+            continue
+
         project_key = task.get("project", "other").lower()
         project_id = PROJECT_MAP.get(project_key)
 
         payload = {
-            "content": task.get("title"),
+            "content": title,
             "priority": task.get("priority", 1)
         }
 
@@ -138,10 +156,11 @@ def braindump():
         except Exception as e:
             print(f"[{request_id}] Todoist exception:", str(e))
 
-    print(f"[{request_id}] Created {created} tasks")
+    print(f"[{request_id}] Created {created}, Skipped {skipped}")
 
     return jsonify({
         "status": "success",
         "tasks_created": created,
+        "tasks_skipped_duplicates": skipped,
         "tasks_parsed": len(tasks)
     })
