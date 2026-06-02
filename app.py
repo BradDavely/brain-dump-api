@@ -3,6 +3,7 @@ import requests
 import os
 import json
 import uuid
+import re
 from datetime import datetime
 
 app = Flask(__name__)
@@ -15,6 +16,12 @@ PROJECT_MAP = {
     "work": "6RH9f45GMC49J67P",
     "home": "6RH9f43CvMjp9Vcp"
 }
+
+def normalize_title(title):
+    title = title.lower()
+    title = re.sub(r'[^\w\s]', '', title)
+    title = re.sub(r'\s+', ' ', title)
+    return title.strip()
 
 @app.route("/")
 def home():
@@ -29,6 +36,7 @@ def braindump():
     request_id = str(uuid.uuid4())
     print(f"[{request_id}] Incoming request at {datetime.utcnow().isoformat()}")
 
+    # ✅ Secret Key Protection
     provided_key = request.headers.get("X-Internal-Key")
     if INTERNAL_API_KEY and provided_key != INTERNAL_API_KEY:
         return jsonify({"error": "Unauthorized"}), 401
@@ -41,6 +49,7 @@ def braindump():
     if not text:
         return jsonify({"error": "No text provided"}), 400
 
+    # ✅ Call OpenAI
     try:
         openai_response = requests.post(
             "https://api.openai.com/v1/chat/completions",
@@ -99,10 +108,10 @@ def braindump():
         tasks = parsed.get("tasks", [])
 
     except Exception as e:
-        print(f"[{request_id}] AI parsing failed:", str(e))
+        print(f"[{request_id}] AI parsing failed: {str(e)}")
         return jsonify({"error": "AI parsing failed"}), 500
 
-    # ✅ Duplicate detection
+    # ✅ Fetch existing tasks
     existing_titles = set()
     existing_response = requests.get(
         "https://api.todoist.com/api/v1/tasks",
@@ -113,16 +122,17 @@ def braindump():
         existing_json = existing_response.json()
         existing_tasks = existing_json.get("results", [])
         for t in existing_tasks:
-            title = t.get("content", "").lower().strip()
+            title = normalize_title(t.get("content", ""))
             if title:
                 existing_titles.add(title)
 
     created = 0
     skipped = 0
 
+    # ✅ Create tasks
     for task in tasks:
         title = task.get("title", "").strip()
-        normalized = title.lower()
+        normalized = normalize_title(title)
 
         if normalized in existing_titles:
             skipped += 1
