@@ -4,7 +4,10 @@ import os
 import json
 import uuid
 import re
-from datetime import datetime
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
 
@@ -12,16 +15,53 @@ OPENAI_KEY = os.environ.get("OPENAI_KEY")
 TODOIST_TOKEN = os.environ.get("TODOIST_TOKEN")
 INTERNAL_API_KEY = os.environ.get("INTERNAL_API_KEY")
 
+EMAIL_USER = os.environ.get("EMAIL_USER")
+EMAIL_PASSWORD = os.environ.get("EMAIL_PASSWORD")
+EMAIL_TO = os.environ.get("EMAIL_TO")
+
 PROJECT_MAP = {
     "work": "6RH9f45GMC49J67P",
     "home": "6RH9f43CvMjp9Vcp"
 }
+
+# ------------------------
+# Utilities
+# ------------------------
 
 def normalize_title(title):
     title = title.lower()
     title = re.sub(r'[^\w\s]', '', title)
     title = re.sub(r'\s+', ' ', title)
     return title.strip()
+
+def require_auth(req):
+    provided_key = req.headers.get("X-Internal-Key")
+    if INTERNAL_API_KEY and provided_key != INTERNAL_API_KEY:
+        return False
+    return True
+
+def send_email(subject, body_text, body_html):
+    if not EMAIL_USER or not EMAIL_PASSWORD or not EMAIL_TO:
+        return
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = EMAIL_USER
+    msg["To"] = EMAIL_TO
+
+    part1 = MIMEText(body_text, "plain")
+    part2 = MIMEText(body_html, "html")
+
+    msg.attach(part1)
+    msg.attach(part2)
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        server.login(EMAIL_USER, EMAIL_PASSWORD)
+        server.send_message(msg)
+
+# ------------------------
+# Routes
+# ------------------------
 
 @app.route("/")
 def home():
@@ -31,14 +71,13 @@ def home():
 def health():
     return jsonify({"status": "healthy"})
 
+# ------------------------
+# Brain Dump Endpoint
+# ------------------------
+
 @app.route("/braindump", methods=["POST"])
 def braindump():
-    request_id = str(uuid.uuid4())
-    print(f"[{request_id}] Incoming request at {datetime.utcnow().isoformat()}")
-
-    # ✅ Secret Key Protection
-    provided_key = request.headers.get("X-Internal-Key")
-    if INTERNAL_API_KEY and provided_key != INTERNAL_API_KEY:
+    if not require_auth(request):
         return jsonify({"error": "Unauthorized"}), 401
 
     data = request.get_json(silent=True)
@@ -49,7 +88,7 @@ def braindump():
     if not text:
         return jsonify({"error": "No text provided"}), 400
 
-    # ✅ Call OpenAI
+    # --- Call GPT ---
     try:
         openai_response = requests.post(
             "https://api.openai.com/v1/chat/completions",
@@ -63,55 +102,23 @@ def braindump():
                     {
                         "role": "system",
                         "content": (
-                            "You are a task extraction engine.\n\n"
-                            "Extract all actionable tasks from the user input.\n\n"
-                            "Return ONLY valid JSON in this format:\n\n"
-                            "{\n"
-                            '  "tasks": [\n'
-                            "    {\n"
-                            '      "title": "Short task title",\n'
-                            '      "project": "work | home | other",\n'
-                            '      "priority": 1-4,\n'
-                            '      "labels": []\n'
-                            "    }\n"
-                            "  ]\n"
-                            "}\n\n"
-                            "Project rules:\n"
-                            "- work = professional tasks, grants, writing, research, clients, meetings\n"
-                            "- home = household, maintenance, errands, car, bills\n"
-                            "- other = anything else\n\n"
-                            "Priority rules:\n"
-                            "4 = Urgent\n"
-                            "3 = Important\n"
-                            "2 = Medium\n"
-                            "1 = Low\n\n"
-                            "Rules:\n"
-                            "- No commentary\n"
-                            "- No markdown\n"
-                            "- Only valid JSON"
+                            "Extract actionable tasks.\n"
+                            "Return JSON with tasks containing title, project (work|home|other), priority 1-4."
                         )
                     },
-                    {
-                        "role": "user",
-                        "content": text
-                    }
+                    {"role": "user", "content": text}
                 ]
-            },
-            timeout=20
+            }
         )
-
-        if openai_response.status_code != 200:
-            return jsonify({"error": "OpenAI failed"}), 500
 
         content = openai_response.json()["choices"][0]["message"]["content"]
         parsed = json.loads(content)
         tasks = parsed.get("tasks", [])
 
-    except Exception as e:
-        print(f"[{request_id}] AI parsing failed: {str(e)}")
+    except Exception:
         return jsonify({"error": "AI parsing failed"}), 500
 
-    # ✅ Fetch existing tasks
+    # --- Duplicate Detection ---
     existing_titles = set()
     existing_response = requests.get(
         "https://api.todoist.com/api/v1/tasks",
@@ -119,17 +126,13 @@ def braindump():
     )
 
     if existing_response.status_code == 200:
-        existing_json = existing_response.json()
-        existing_tasks = existing_json.get("results", [])
+        existing_tasks = existing_response.json().get("results", [])
         for t in existing_tasks:
-            title = normalize_title(t.get("content", ""))
-            if title:
-                existing_titles.add(title)
+            existing_titles.add(normalize_title(t.get("content", "")))
 
     created = 0
     skipped = 0
 
-    # ✅ Create tasks
     for task in tasks:
         title = task.get("title", "").strip()
         normalized = normalize_title(title)
@@ -155,18 +158,126 @@ def braindump():
                 "Authorization": f"Bearer {TODOIST_TOKEN}",
                 "Content-Type": "application/json"
             },
-            json=payload,
-            timeout=10
+            json=payload
         )
 
         if todoist_response.status_code == 200:
             created += 1
 
-    print(f"[{request_id}] Created {created}, Skipped {skipped}")
-
     return jsonify({
         "status": "success",
-        "tasks_created": created,
-        "tasks_skipped_duplicates": skipped,
-        "tasks_parsed": len(tasks)
+        "created": created,
+        "skipped_duplicates": skipped
     })
+
+# ------------------------
+# Daily Summary
+# ------------------------
+
+@app.route("/daily-summary")
+def daily_summary():
+    if not require_auth(request):
+        return jsonify({"error": "Unauthorized"}), 401
+
+    today = datetime.utcnow().date()
+
+    response = requests.get(
+        "https://api.todoist.com/api/v1/tasks",
+        headers={"Authorization": f"Bearer {TODOIST_TOKEN}"}
+    )
+
+    tasks = response.json().get("results", [])
+
+    today_tasks = [
+        t["content"]
+        for t in tasks
+        if datetime.fromisoformat(t["created_at"].replace("Z", "+00:00")).date() == today
+    ]
+
+    # HTML formatting
+    html_tasks = "".join(f"<li>{task}</li>" for task in today_tasks)
+
+    html_body = f"""
+    <html>
+      <body style="font-family: Arial, sans-serif;">
+        <h2>Daily Summary - {today}</h2>
+        <ul>{html_tasks}</ul>
+      </body>
+    </html>
+    """
+
+    text_body = "Daily Summary:\n\n" + "\n".join(today_tasks)
+
+    send_email(
+        subject=f"Daily Task Summary - {today}",
+        body_text=text_body,
+        body_html=html_body
+    )
+
+    return jsonify({"sent": True, "count": len(today_tasks)})
+
+# ------------------------
+# Weekly Review
+# ------------------------
+
+@app.route("/weekly-review")
+def weekly_review():
+    if not require_auth(request):
+        return jsonify({"error": "Unauthorized"}), 401
+
+    one_week_ago = datetime.utcnow() - timedelta(days=7)
+
+    response = requests.get(
+        "https://api.todoist.com/api/v1/tasks?filter=completed",
+        headers={"Authorization": f"Bearer {TODOIST_TOKEN}"}
+    )
+
+    tasks = response.json().get("results", [])
+
+    recent = [
+        t["content"]
+        for t in tasks
+        if datetime.fromisoformat(t["completed_at"].replace("Z", "+00:00")) > one_week_ago
+    ]
+
+    if not recent:
+        return jsonify({"message": "No completed tasks this week."})
+
+    review_prompt = (
+        "Summarize this week's accomplishments and highlight key wins and improvement areas:\n\n"
+        + "\n".join(recent)
+    )
+
+    ai_response = requests.post(
+        "https://api.openai.com/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {OPENAI_KEY}",
+            "Content-Type": "application/json"
+        },
+        json={
+            "model": "gpt-5.4-mini",
+            "messages": [
+                {"role": "system", "content": "You are a reflective productivity coach."},
+                {"role": "user", "content": review_prompt}
+            ]
+        }
+    )
+
+    summary = ai_response.json()["choices"][0]["message"]["content"]
+
+    html_body = f"""
+    <html>
+      <body style="font-family: Arial, sans-serif;">
+        <h2>Weekly Productivity Review</h2>
+        <div style="white-space: pre-line;">{summary}</div>
+      </body>
+    </html>
+    """
+
+    send_email(
+        subject="Weekly Productivity Review",
+        body_text=summary,
+        body_html=html_body
+    )
+
+    return jsonify({"sent": True})
