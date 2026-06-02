@@ -30,10 +30,9 @@ def braindump():
     request_id = str(uuid.uuid4())
     print(f"[{request_id}] Incoming request at {datetime.utcnow().isoformat()}")
 
-    # ✅ Secret Key Protection
+    # Secret key protection
     provided_key = request.headers.get("X-Internal-Key")
     if INTERNAL_API_KEY and provided_key != INTERNAL_API_KEY:
-        print(f"[{request_id}] Unauthorized attempt")
         return jsonify({"error": "Unauthorized"}), 401
 
     if not OPENAI_KEY or not TODOIST_TOKEN:
@@ -57,43 +56,37 @@ def braindump():
             json={
                 "model": "gpt-5.4-mini",
                 "messages": [
-                 {
-    "role": "system",
-    "content": """
-You are a task extraction engine.
-
-Extract all actionable tasks from the user input.
-
-Return ONLY valid JSON in this format:
-
-{
-  "tasks": [
-    {
-      "title": "Short task title",
-      "project": "work | home | other",
-      "priority": 1-4,
-      "labels": []
-    }
-  ]
-}
-
-Project rules:
-- work = professional tasks, clients, research, writing, grants, emails, meetings, job-related items
-- home = household, maintenance, errands, car, bills, chores, family
-- other = anything that does not clearly fit work or home
-
-Priority rules:
-4 = Urgent or time-sensitive
-3 = Important
-2 = Medium
-1 = Low
-
-Rules:
-- No commentary
-- No markdown
-- Only valid JSON
-"""
-}},
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a task extraction engine.\n\n"
+                            "Extract all actionable tasks from the user input.\n\n"
+                            "Return ONLY valid JSON in this format:\n\n"
+                            "{\n"
+                            '  "tasks": [\n'
+                            "    {\n"
+                            '      "title": "Short task title",\n'
+                            '      "project": "work | home | other",\n'
+                            '      "priority": 1-4,\n'
+                            '      "labels": []\n'
+                            "    }\n"
+                            "  ]\n"
+                            "}\n\n"
+                            "Project rules:\n"
+                            "- work = professional tasks, grants, writing, research, clients, meetings, job-related items\n"
+                            "- home = household, maintenance, errands, car, bills, chores\n"
+                            "- other = anything else\n\n"
+                            "Priority rules:\n"
+                            "4 = Urgent or time-sensitive\n"
+                            "3 = Important\n"
+                            "2 = Medium\n"
+                            "1 = Low\n\n"
+                            "Rules:\n"
+                            "- No commentary\n"
+                            "- No markdown\n"
+                            "- Only valid JSON"
+                        )
+                    },
                     {
                         "role": "user",
                         "content": text
@@ -117,19 +110,18 @@ Rules:
     created = 0
 
     for task in tasks:
+        project_key = task.get("project", "other").lower()
+        project_id = PROJECT_MAP.get(project_key)
+
+        payload = {
+            "content": task.get("title"),
+            "priority": task.get("priority", 1)
+        }
+
+        if project_id:
+            payload["project_id"] = project_id
+
         try:
-            project_key = task.get("project", "other").lower()
-            project_id = PROJECT_MAP.get(project_key)
-
-            payload = {
-                "content": task.get("title"),
-                "priority": task.get("priority", 1)
-            }
-
-            # ✅ Only add project_id if known
-            if project_id:
-                payload["project_id"] = project_id
-
             todoist_response = requests.post(
                 "https://api.todoist.com/api/v1/tasks",
                 headers={
@@ -142,8 +134,6 @@ Rules:
 
             if todoist_response.status_code == 200:
                 created += 1
-            else:
-                print(f"[{request_id}] Todoist error:", todoist_response.text)
 
         except Exception as e:
             print(f"[{request_id}] Todoist exception:", str(e))
