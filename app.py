@@ -57,9 +57,9 @@ def braindump():
             json={
                 "model": "gpt-5.4-mini",
                 "messages": [
-                    {
-                        "role": "system",
-                        "content": """
+                 {
+    "role": "system",
+    "content": """
 You are a task extraction engine.
 
 Extract all actionable tasks from the user input.
@@ -72,10 +72,15 @@ Return ONLY valid JSON in this format:
       "title": "Short task title",
       "project": "work | home | other",
       "priority": 1-4,
-      "labels": ["optional", "labels"]
+      "labels": []
     }
   ]
 }
+
+Project rules:
+- work = professional tasks, clients, research, writing, grants, emails, meetings, job-related items
+- home = household, maintenance, errands, car, bills, chores, family
+- other = anything that does not clearly fit work or home
 
 Priority rules:
 4 = Urgent or time-sensitive
@@ -88,7 +93,7 @@ Rules:
 - No markdown
 - Only valid JSON
 """
-                    },
+}},
                     {
                         "role": "user",
                         "content": text
