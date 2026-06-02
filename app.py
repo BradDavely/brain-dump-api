@@ -169,7 +169,6 @@ def braindump():
         "skipped_duplicates": skipped
     })
 
-```python
 # ------------------------
 # Daily Summary Only
 # ------------------------
