@@ -169,6 +169,7 @@ def braindump():
         "skipped_duplicates": skipped
     })
 
+```python
 # ------------------------
 # Daily Summary Only
 # ------------------------
@@ -178,22 +179,44 @@ def daily_summary():
     if not require_auth(request):
         return jsonify({"error": "Unauthorized"}), 401
 
-    today = datetime.utcnow().date()
+    eastern = ZoneInfo("America/New_York")
+    today = datetime.now(eastern).date()
 
     response = requests.get(
         "https://api.todoist.com/api/v1/tasks",
         headers={"Authorization": f"Bearer {TODOIST_TOKEN}"}
     )
 
+    if response.status_code != 200:
+        return jsonify({
+            "error": "Failed to retrieve Todoist tasks",
+            "status_code": response.status_code
+        }), 500
+
     tasks = response.json().get("results", [])
 
-    today_tasks = [
-        t["content"]
-        for t in tasks
-        if datetime.fromisoformat(t["created_at"].replace("Z", "+00:00")).date() == today
-    ]
+    today_tasks = []
 
-    html_tasks = "".join(f"<li>{task}</li>" for task in today_tasks)
+    for t in tasks:
+        try:
+            created_utc = datetime.fromisoformat(
+                t["created_at"].replace("Z", "+00:00")
+            )
+
+            created_eastern = created_utc.astimezone(eastern)
+
+            if created_eastern.date() == today:
+                today_tasks.append(t["content"])
+
+        except Exception:
+            continue
+
+    html_tasks = "".join(
+        f"<li>{task}</li>" for task in today_tasks
+    )
+
+    if not html_tasks:
+        html_tasks = "<li>No tasks created today.</li>"
 
     html_body = f"""
     <html>
@@ -204,7 +227,12 @@ def daily_summary():
     </html>
     """
 
-    text_body = "Daily Summary:\n\n" + "\n".join(today_tasks)
+    text_body = (
+        "Daily Summary:\n\n" +
+        "\n".join(today_tasks)
+        if today_tasks
+        else "Daily Summary:\n\nNo tasks created today."
+    )
 
     send_email(
         subject=f"Daily Task Summary - {today}",
@@ -212,4 +240,15 @@ def daily_summary():
         body_html=html_body
     )
 
-    return jsonify({"sent": True, "count": len(today_tasks)})
+    return jsonify({
+        "sent": True,
+        "count": len(today_tasks)
+    })
+
+# ------------------------
+# Main
+# ------------------------
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
+```
