@@ -57,9 +57,9 @@ def braindump():
             json={
                 "model": "gpt-5.4-mini",
                 "messages": [
-                    {
-                        "role": "system",
-                        "content": """
+                   {
+    "role": "system",
+    "content": """
 You are a task extraction engine.
 
 Extract all actionable tasks from the user input.
@@ -77,13 +77,19 @@ Return ONLY valid JSON in this format:
   ]
 }
 
+Priority rules:
+4 = Urgent or time-sensitive (today, ASAP, deadline soon)
+3 = Important but not urgent
+2 = Useful but can wait
+1 = Low priority / optional
+
 Rules:
 - No commentary
 - No markdown
 - No explanation
 - Only valid JSON
 """
-                    },
+},
                     {
                         "role": "user",
                         "content": text
