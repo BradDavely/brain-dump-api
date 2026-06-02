@@ -104,17 +104,19 @@ def braindump():
 
     # ✅ Fetch existing tasks for duplicate detection
     existing_response = requests.get(
-        "https://api.todoist.com/api/v1/tasks",
-        headers={"Authorization": f"Bearer {TODOIST_TOKEN}"}
-    )
+    "https://api.todoist.com/api/v1/tasks",
+    headers={"Authorization": f"Bearer {TODOIST_TOKEN}"}
+)
 
-    existing_titles = set()
-    if existing_response.status_code == 200:
-        existing_tasks = existing_response.json()
-        existing_titles = {
-            t["content"].lower().strip()
-            for t in existing_tasks
-        }
+existing_titles = set()
+
+if existing_response.status_code == 200:
+    existing_json = existing_response.json()
+    existing_tasks = existing_json.get("results", [])
+    existing_titles = {
+        t.get("content", "").lower().strip()
+        for t in existing_tasks
+    }
 
     created = 0
     skipped = 0
