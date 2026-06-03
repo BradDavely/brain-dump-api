@@ -30,10 +30,9 @@ OPENAI_KEY = os.environ.get("OPENAI_KEY")
 TODOIST_TOKEN = os.environ.get("TODOIST_TOKEN")
 INTERNAL_API_KEY = os.environ.get("INTERNAL_API_KEY")
 
-# Optional:
-# You can set OPENAI_MODEL in Railway if you want to control the model there.
-# If you do not set it, this default will be used.
-OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+# You can control this in Railway.
+# Since you said gpt-5.4-mini worked, this keeps that as the default.
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.4-mini")
 
 PROJECT_MAP = {
     "work": "6RH9f45GMC49J67P",
@@ -46,6 +45,14 @@ PROJECT_MAP = {
 # -----------------------------
 
 def normalize_title(title):
+    """
+    Normalizes task titles for duplicate checking.
+    This catches things like:
+    - Call plumber
+    - call plumber
+    - Call plumber!
+    """
+
     title = title.lower()
     title = re.sub(r"[^\w\s]", "", title)
     title = re.sub(r"\s+", " ", title)
@@ -55,11 +62,12 @@ def normalize_title(title):
 def get_priority_value(priority):
     """
     Keeps priority safe.
-    Your app uses:
-    4 = urgent
+
+    Todoist API priority values:
+    4 = very urgent
     3 = important
     2 = medium
-    1 = low
+    1 = low / normal
     """
 
     try:
@@ -73,13 +81,29 @@ def get_priority_value(priority):
     return priority
 
 
+def clean_project_value(project):
+    """
+    Keeps project values limited to your known project categories.
+    """
+
+    if not project:
+        return "other"
+
+    project = str(project).lower().strip()
+
+    if project not in ["work", "home", "other"]:
+        return "other"
+
+    return project
+
+
 def dedupe_parsed_tasks(tasks, request_id):
     """
     Removes duplicate tasks returned by OpenAI before anything is sent to Todoist.
 
-    If the same normalized title appears more than once, this keeps one version.
-    It keeps the highest priority version, since duplicate AI output may rank
-    the same task differently.
+    This intentionally uses the normalized title as the duplicate key.
+    If the model returns the same task twice with different priorities, this keeps
+    the highest priority version.
     """
 
     deduped = {}
@@ -98,12 +122,12 @@ def dedupe_parsed_tasks(tasks, request_id):
             continue
 
         priority = get_priority_value(task.get("priority", 1))
+        project = clean_project_value(task.get("project", "other"))
 
         cleaned_task = {
             "title": title,
-            "project": task.get("project", "other"),
-            "priority": priority,
-            "labels": task.get("labels", [])
+            "project": project,
+            "priority": priority
         }
 
         if normalized not in deduped:
@@ -119,17 +143,17 @@ def dedupe_parsed_tasks(tasks, request_id):
             )
             deduped[normalized] = cleaned_task
         else:
-            print(
-                f"[{request_id}] Duplicate parsed task removed: '{title}'"
-            )
+            print(f"[{request_id}] Duplicate parsed task removed: '{title}'")
 
     return list(deduped.values())
 
 
 def get_openai_tasks(text, request_id):
     """
-    Sends the brain dump text to OpenAI and returns structured task data.
-    Uses Structured Outputs so the response must match the JSON schema.
+    Sends the brain dump text to OpenAI and returns clean structured task data.
+
+    This version intentionally favors fewer, cleaner tasks over splitting every
+    thought into several overlapping tasks.
     """
 
     task_schema = {
@@ -152,19 +176,12 @@ def get_openai_tasks(text, request_id):
                         "priority": {
                             "type": "integer",
                             "enum": [1, 2, 3, 4]
-                        },
-                        "labels": {
-                            "type": "array",
-                            "items": {
-                                "type": "string"
-                            }
                         }
                     },
                     "required": [
                         "title",
                         "project",
-                        "priority",
-                        "labels"
+                        "priority"
                     ]
                 }
             }
@@ -184,17 +201,40 @@ def get_openai_tasks(text, request_id):
                 {
                     "role": "system",
                     "content": (
-                        "You are a task extraction engine. "
-                        "Extract actionable tasks from the user's brain dump. "
-                        "Use short, clear task titles. "
-                        "Categorize each task as work, home, or other. "
-                        "Assign priority using this scale: "
-                        "4 = urgent, 3 = important, 2 = medium, 1 = low. "
-                        "Only include real actionable tasks. "
-                        "Do not include vague thoughts unless they can be turned into a useful task. "
-                        "Important duplicate rule: if the same task appears more than once, "
-                        "return it only one time. If duplicate versions seem to have different urgency, "
-                        "keep the highest priority version only."
+                        "You are a Todoist task extraction engine.\n\n"
+                        "Your job is to turn a messy brain dump into a short list of clean Todoist tasks.\n\n"
+                        "Most important behavior:\n"
+                        "- Prefer fewer, cleaner tasks over many similar tasks.\n"
+                        "- Combine overlapping, related, or duplicate ideas into one task.\n"
+                        "- Do not split one idea into multiple tasks unless the actions are clearly different.\n"
+                        "- If the same task appears more than once, return it only one time.\n"
+                        "- Use simple canonical Todoist-style task titles.\n"
+                        "- Make titles stable and reusable so duplicate checking works well later.\n\n"
+                        "Good title examples:\n"
+                        "- Fix Ring doorbell notifications\n"
+                        "- Call the plumber\n"
+                        "- Review SAP cost tracker\n"
+                        "- Schedule dentist appointment\n\n"
+                        "Bad behavior examples:\n"
+                        "- Do not return both 'Check Ring app settings' and 'Fix Ring doorbell notifications' "
+                        "if they are part of the same issue.\n"
+                        "- Do not return both 'Email Eric about schedule' and 'Ask Eric about schedule' "
+                        "unless they are truly different actions.\n\n"
+                        "Project rules:\n"
+                        "- work = professional tasks, meetings, reports, facilities, Penn State, custodial work, "
+                        "Power BI, Power Apps, RFPs, presentations, vendors, coworkers, customers.\n"
+                        "- home = household, family, errands, car, bills, appointments, maintenance, personal admin.\n"
+                        "- other = anything that does not clearly fit work or home.\n\n"
+                        "Priority rules:\n"
+                        "- 4 = urgent and time-sensitive.\n"
+                        "- 3 = important but not immediately urgent.\n"
+                        "- 2 = normal medium priority.\n"
+                        "- 1 = low priority or someday/maybe.\n\n"
+                        "Final rules:\n"
+                        "- Only include real actionable tasks.\n"
+                        "- Do not include vague thoughts unless they can be turned into a useful task.\n"
+                        "- Do not create reminder-style tasks unless the user clearly needs to do something.\n"
+                        "- Keep task titles short and natural.\n"
                     )
                 },
                 {
@@ -246,7 +286,6 @@ def get_openai_tasks(text, request_id):
 def fetch_existing_todoist_titles(request_id):
     """
     Fetches all active Todoist task titles using cursor-based pagination.
-    This helps prevent duplicates even when the account has more than one page of tasks.
     """
 
     existing_titles = set()
@@ -344,7 +383,7 @@ def braindump():
         print(f"[{request_id}] No text provided")
         return jsonify({"error": "No text provided"}), 400
 
-    # Optional safety limit so huge accidental brain dumps do not create problems.
+    # Safety limit so huge accidental brain dumps do not create problems.
     if len(text) > 8000:
         print(f"[{request_id}] Text too long: {len(text)} characters")
         return jsonify({"error": "Text too long"}), 400
@@ -359,7 +398,7 @@ def braindump():
 
     print(f"[{request_id}] Ready to process {len(tasks)} deduped task(s)")
 
-    # Fetch all existing active Todoist tasks using pagination
+    # Fetch existing active Todoist tasks
     existing_titles = fetch_existing_todoist_titles(request_id)
 
     created = 0
@@ -382,15 +421,7 @@ def braindump():
             print(f"[{request_id}] Skipped duplicate task already in Todoist: '{title}'")
             continue
 
-        project_key = task.get("project", "other").lower()
-
-        if project_key not in ["work", "home", "other"]:
-            print(
-                f"[{request_id}] Invalid project '{project_key}' for task '{title}'. "
-                "Defaulting to other."
-            )
-            project_key = "other"
-
+        project_key = clean_project_value(task.get("project", "other"))
         project_id = PROJECT_MAP.get(project_key)
 
         priority = get_priority_value(task.get("priority", 1))
