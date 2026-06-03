@@ -144,7 +144,6 @@ def get_openai_tasks(text, request_id):
     response_json = response.json()
     message = response_json["choices"][0]["message"]
 
-    # Structured Outputs may return a refusal instead of schema content.
     if message.get("refusal"):
         print(f"[{request_id}] OpenAI refusal: {message.get('refusal')}")
         raise RuntimeError("OpenAI refused the request")
@@ -182,20 +181,24 @@ def braindump():
     provided_key = request.headers.get("X-Internal-Key")
 
     if provided_key != INTERNAL_API_KEY:
+        print(f"[{request_id}] Unauthorized request blocked")
         return jsonify({"error": "Unauthorized"}), 401
 
     data = request.get_json(silent=True)
 
     if not data:
+        print(f"[{request_id}] Invalid JSON body")
         return jsonify({"error": "Invalid JSON body"}), 400
 
     text = data.get("text", "").strip()
 
     if not text:
+        print(f"[{request_id}] No text provided")
         return jsonify({"error": "No text provided"}), 400
 
     # Optional safety limit so huge accidental brain dumps do not create problems.
     if len(text) > 8000:
+        print(f"[{request_id}] Text too long: {len(text)} characters")
         return jsonify({"error": "Text too long"}), 400
 
     # Call OpenAI with Structured Outputs
@@ -205,6 +208,8 @@ def braindump():
     except Exception as e:
         print(f"[{request_id}] AI parsing failed: {str(e)}")
         return jsonify({"error": "AI parsing failed"}), 500
+
+    print(f"[{request_id}] OpenAI parsed {len(tasks)} task(s)")
 
     # Fetch existing Todoist tasks for duplicate checking
     existing_titles = set()
@@ -227,6 +232,9 @@ def braindump():
 
                 if title:
                     existing_titles.add(title)
+
+            print(f"[{request_id}] Loaded {len(existing_titles)} existing Todoist task title(s)")
+
         else:
             print(
                 f"[{request_id}] Todoist existing task fetch failed: "
@@ -246,17 +254,23 @@ def braindump():
 
         if not title:
             failed += 1
+            print(f"[{request_id}] Skipped task because title was empty: {task}")
             continue
 
         normalized = normalize_title(title)
 
         if normalized in existing_titles:
             skipped += 1
+            print(f"[{request_id}] Skipped duplicate task: '{title}'")
             continue
 
         project_key = task.get("project", "other").lower()
 
         if project_key not in ["work", "home", "other"]:
+            print(
+                f"[{request_id}] Invalid project '{project_key}' for task '{title}'. "
+                "Defaulting to other."
+            )
             project_key = "other"
 
         project_id = PROJECT_MAP.get(project_key)
@@ -264,6 +278,10 @@ def braindump():
         priority = task.get("priority", 1)
 
         if priority not in [1, 2, 3, 4]:
+            print(
+                f"[{request_id}] Invalid priority '{priority}' for task '{title}'. "
+                "Defaulting to 1."
+            )
             priority = 1
 
         payload = {
@@ -288,16 +306,20 @@ def braindump():
             if todoist_response.status_code == 200:
                 created += 1
                 existing_titles.add(normalized)
+                print(f"[{request_id}] Created Todoist task: '{title}'")
+
             else:
                 failed += 1
                 print(
-                    f"[{request_id}] Todoist task creation failed: "
+                    f"[{request_id}] Todoist task creation failed for '{title}': "
                     f"{todoist_response.status_code} {todoist_response.text}"
                 )
+                print(f"[{request_id}] Failed payload for '{title}': {json.dumps(payload)}")
 
         except Exception as e:
             failed += 1
-            print(f"[{request_id}] Todoist task creation error: {str(e)}")
+            print(f"[{request_id}] Todoist task creation error for '{title}': {str(e)}")
+            print(f"[{request_id}] Failed payload for '{title}': {json.dumps(payload)}")
 
     print(f"[{request_id}] Created {created}, Skipped {skipped}, Failed {failed}")
 
