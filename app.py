@@ -33,7 +33,7 @@ INTERNAL_API_KEY = os.environ.get("INTERNAL_API_KEY")
 # Optional:
 # You can set OPENAI_MODEL in Railway if you want to control the model there.
 # If you do not set it, this default will be used.
-OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.4-mini")
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 
 PROJECT_MAP = {
     "work": "6RH9f45GMC49J67P",
@@ -158,6 +158,69 @@ def get_openai_tasks(text, request_id):
     return parsed.get("tasks", [])
 
 
+def fetch_existing_todoist_titles(request_id):
+    """
+    Fetches all active Todoist task titles using cursor-based pagination.
+    This helps prevent duplicates even when the account has more than one page of tasks.
+    """
+
+    existing_titles = set()
+    cursor = None
+    page_count = 0
+
+    while True:
+        params = {
+            "limit": 200
+        }
+
+        if cursor:
+            params["cursor"] = cursor
+
+        try:
+            response = requests.get(
+                "https://api.todoist.com/api/v1/tasks",
+                headers={
+                    "Authorization": f"Bearer {TODOIST_TOKEN}"
+                },
+                params=params,
+                timeout=10
+            )
+
+            if response.status_code != 200:
+                print(
+                    f"[{request_id}] Todoist existing task fetch failed: "
+                    f"{response.status_code} {response.text}"
+                )
+                break
+
+            response_json = response.json()
+            page_count += 1
+
+            existing_tasks = response_json.get("results", [])
+
+            for task in existing_tasks:
+                title = normalize_title(task.get("content", ""))
+
+                if title:
+                    existing_titles.add(title)
+
+            cursor = response_json.get("next_cursor")
+
+            if not cursor:
+                break
+
+        except Exception as e:
+            print(f"[{request_id}] Todoist existing task fetch error: {str(e)}")
+            break
+
+    print(
+        f"[{request_id}] Loaded {len(existing_titles)} existing Todoist task title(s) "
+        f"from {page_count} page(s)"
+    )
+
+    return existing_titles
+
+
 # -----------------------------
 # Routes
 # -----------------------------
@@ -211,38 +274,8 @@ def braindump():
 
     print(f"[{request_id}] OpenAI parsed {len(tasks)} task(s)")
 
-    # Fetch existing Todoist tasks for duplicate checking
-    existing_titles = set()
-
-    try:
-        existing_response = requests.get(
-            "https://api.todoist.com/api/v1/tasks",
-            headers={
-                "Authorization": f"Bearer {TODOIST_TOKEN}"
-            },
-            timeout=10
-        )
-
-        if existing_response.status_code == 200:
-            existing_json = existing_response.json()
-            existing_tasks = existing_json.get("results", [])
-
-            for task in existing_tasks:
-                title = normalize_title(task.get("content", ""))
-
-                if title:
-                    existing_titles.add(title)
-
-            print(f"[{request_id}] Loaded {len(existing_titles)} existing Todoist task title(s)")
-
-        else:
-            print(
-                f"[{request_id}] Todoist existing task fetch failed: "
-                f"{existing_response.status_code} {existing_response.text}"
-            )
-
-    except Exception as e:
-        print(f"[{request_id}] Todoist existing task fetch error: {str(e)}")
+    # Fetch all existing active Todoist tasks using pagination
+    existing_titles = fetch_existing_todoist_titles(request_id)
 
     created = 0
     skipped = 0
