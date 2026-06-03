@@ -52,6 +52,80 @@ def normalize_title(title):
     return title.strip()
 
 
+def get_priority_value(priority):
+    """
+    Keeps priority safe.
+    Your app uses:
+    4 = urgent
+    3 = important
+    2 = medium
+    1 = low
+    """
+
+    try:
+        priority = int(priority)
+    except Exception:
+        return 1
+
+    if priority not in [1, 2, 3, 4]:
+        return 1
+
+    return priority
+
+
+def dedupe_parsed_tasks(tasks, request_id):
+    """
+    Removes duplicate tasks returned by OpenAI before anything is sent to Todoist.
+
+    If the same normalized title appears more than once, this keeps one version.
+    It keeps the highest priority version, since duplicate AI output may rank
+    the same task differently.
+    """
+
+    deduped = {}
+
+    for task in tasks:
+        title = task.get("title", "").strip()
+
+        if not title:
+            print(f"[{request_id}] Dropping parsed task with empty title: {task}")
+            continue
+
+        normalized = normalize_title(title)
+
+        if not normalized:
+            print(f"[{request_id}] Dropping parsed task with invalid normalized title: {task}")
+            continue
+
+        priority = get_priority_value(task.get("priority", 1))
+
+        cleaned_task = {
+            "title": title,
+            "project": task.get("project", "other"),
+            "priority": priority,
+            "labels": task.get("labels", [])
+        }
+
+        if normalized not in deduped:
+            deduped[normalized] = cleaned_task
+            continue
+
+        existing_priority = get_priority_value(deduped[normalized].get("priority", 1))
+
+        if priority > existing_priority:
+            print(
+                f"[{request_id}] Duplicate parsed task found. "
+                f"Keeping higher priority version for: '{title}'"
+            )
+            deduped[normalized] = cleaned_task
+        else:
+            print(
+                f"[{request_id}] Duplicate parsed task removed: '{title}'"
+            )
+
+    return list(deduped.values())
+
+
 def get_openai_tasks(text, request_id):
     """
     Sends the brain dump text to OpenAI and returns structured task data.
@@ -111,13 +185,16 @@ def get_openai_tasks(text, request_id):
                     "role": "system",
                     "content": (
                         "You are a task extraction engine. "
-                        "Extract all actionable tasks from the user's brain dump. "
+                        "Extract actionable tasks from the user's brain dump. "
                         "Use short, clear task titles. "
                         "Categorize each task as work, home, or other. "
                         "Assign priority using this scale: "
                         "4 = urgent, 3 = important, 2 = medium, 1 = low. "
                         "Only include real actionable tasks. "
-                        "Do not include vague thoughts unless they can be turned into a useful task."
+                        "Do not include vague thoughts unless they can be turned into a useful task. "
+                        "Important duplicate rule: if the same task appears more than once, "
+                        "return it only one time. If duplicate versions seem to have different urgency, "
+                        "keep the highest priority version only."
                     )
                 },
                 {
@@ -155,7 +232,15 @@ def get_openai_tasks(text, request_id):
         raise RuntimeError("OpenAI returned empty content")
 
     parsed = json.loads(content)
-    return parsed.get("tasks", [])
+    raw_tasks = parsed.get("tasks", [])
+
+    print(f"[{request_id}] OpenAI returned {len(raw_tasks)} raw task(s)")
+
+    deduped_tasks = dedupe_parsed_tasks(raw_tasks, request_id)
+
+    print(f"[{request_id}] After parsed-task dedupe: {len(deduped_tasks)} task(s)")
+
+    return deduped_tasks
 
 
 def fetch_existing_todoist_titles(request_id):
@@ -272,7 +357,7 @@ def braindump():
         print(f"[{request_id}] AI parsing failed: {str(e)}")
         return jsonify({"error": "AI parsing failed"}), 500
 
-    print(f"[{request_id}] OpenAI parsed {len(tasks)} task(s)")
+    print(f"[{request_id}] Ready to process {len(tasks)} deduped task(s)")
 
     # Fetch all existing active Todoist tasks using pagination
     existing_titles = fetch_existing_todoist_titles(request_id)
@@ -294,7 +379,7 @@ def braindump():
 
         if normalized in existing_titles:
             skipped += 1
-            print(f"[{request_id}] Skipped duplicate task: '{title}'")
+            print(f"[{request_id}] Skipped duplicate task already in Todoist: '{title}'")
             continue
 
         project_key = task.get("project", "other").lower()
@@ -308,14 +393,7 @@ def braindump():
 
         project_id = PROJECT_MAP.get(project_key)
 
-        priority = task.get("priority", 1)
-
-        if priority not in [1, 2, 3, 4]:
-            print(
-                f"[{request_id}] Invalid priority '{priority}' for task '{title}'. "
-                "Defaulting to 1."
-            )
-            priority = 1
+        priority = get_priority_value(task.get("priority", 1))
 
         payload = {
             "content": title,
@@ -336,10 +414,16 @@ def braindump():
                 timeout=10
             )
 
-            if todoist_response.status_code == 200:
+            if todoist_response.status_code in [200, 201]:
                 created += 1
+
+                # Add it immediately so another matching parsed task in this same run cannot be posted.
                 existing_titles.add(normalized)
-                print(f"[{request_id}] Created Todoist task: '{title}'")
+
+                print(
+                    f"[{request_id}] Created Todoist task: '{title}' "
+                    f"with priority {priority}"
+                )
 
             else:
                 failed += 1
